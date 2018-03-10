@@ -17,7 +17,7 @@ import os from 'os';
 
 const loggerStream = winstonStream(winston, 'info');
 const eclient = new elasticsearch.Client({
-  host: 'http://localhost:9200',
+  host: process.env.ELASTIC_URL || '0.0.0.0:9200',
 
   log: {
     level : 'info',
@@ -121,6 +121,24 @@ export async function sync () {
         }
       });
     }
+    winston.log('info', '[Importer] Removing blocked claims from search!');
+    var util = require('./util.js');
+    var blockedOutputsResponse = await getBlockedOutpoints();
+    var outpointlist = JSON.parse(blockedOutputsResponse);
+    for (let outpoint of outpointlist.data.outpoints) {
+      var claimid = util.OutpointToClaimId(outpoint);
+      console.log('Deleting ClaimId: ' + claimid);
+      eclient.delete({
+        index: 'claims',
+        type : 'claim',
+        id   : claimid,
+      }, function (error, response) {
+        if (error) {
+          winston.log(error);
+        }
+      });
+    }
+
     // Done adding, update our claimTrie cache to latest and wait a bit...
     await saveJSON(path.join(appRoot.path, 'claimTrieCache.json'), latestClaimTrie);
     status.info = 'upToDate';
@@ -129,6 +147,8 @@ export async function sync () {
   } catch (err) {
     winston.log(err);
     status.err = err;
+    await sleep(600000);
+    sync();
   }
 }
 
@@ -152,7 +172,19 @@ function getRemovedClaims (oldClaimTrie, newClaimTrie) {
   });
 }
 
-function getValue (tx, i) {
+function getBlockedOutpoints () {
+  return new Promise((resolve, reject) => {
+    rp(`http://api.lbry.io/file/list_blocked`)
+      .then(function (htmlString) {
+        resolve(htmlString);
+      })
+      .catch(function (err) {
+        reject(err);
+      });
+  });
+}
+
+export function getValue (tx, i) {
   return new Promise((resolve, reject) => {
     rp(`http://localhost:5000/claim_decode/${tx}/${i}`)
       .then(function (htmlString) {
